@@ -118,7 +118,100 @@ def MobileNetV2(input_shape,
     x = BatchNormalization(epsilon=1e-3, momentum=0.999, name='bn_Conv1')(x)
     x = Activation(relu6, name='Conv1_relu')(x)
 
+    x = _first_inverted_res_block(x,
+                                  filters=16,
+                                  alpha=alpha,
+                                  stride=1,
+                                  expansion=1,
+                                  block_id=0)
+    x = _inverted_res_block(x, filters=24, alpha=alpha, stride=2, 
+                            expansion=6, block_id=1)
+    x = _inverted_res_block(x, filters=24, alpha=alpha, stride=1, 
+                            expansion=6, block_id=2)
 
+    x = _inverted_res_block(x, filters=32, alpha=alpha, stride=2,
+                            expansion=6, block_id=3)
+    x = _inverted_res_block(x, filters=32, alpha=alpha, stride=1,
+                            expansion=6, block_id=4)
+    x = _inverted_res_block(x, filters=32, alpha=alpha, stride=1,
+                            expansion=6, block_id=5)
+    
+    x = _inverted_res_block(x, filters=64, alpha=alpha, stride=2,
+                            expansion=6, block_id=6)
+    x = _inverted_res_block(x, filters=64, alpha=alpha, stride=1,
+                            expansion=6, block_id=7)
+    x = _inverted_res_block(x, filters=64, alpha=alpha, stride=1,
+                            expansion=6, block_id=8)
+    x = _inverted_res_block(x, filters=64, alpha=alpha, stride=1,
+                            expansion=6, block_id=9)
+
+    x = _inverted_res_block(x, filters=96, alpha=alpha, stride=1,
+                            expansion=6, block_id=10)
+    x = _inverted_res_block(x, filters=96, alpha=alpha, stride=1,
+                            expansion=6, block_id=11)
+    x = _inverted_res_block(x, filters=96, alpha=alpha, stride=1,
+                            expansion=6, block_id=12)
+    
+    x = _inverted_res_block(x, filters=160, alpha=alpha, stride=2,
+                            expansion=6, block_id=13)
+    x = _inverted_res_block(x, filters=160, alpha=alpha, stride=1,
+                            expansion=6, block_id=14)
+    x = _inverted_res_block(x, filters=160, alpha=alpha, stride=1,
+                            expansion=6, block_id==15)
+    
+    x = _inverted_res_block(x, filters=320, alpha=alpha, stride=1,
+                            expansion=6, block_id=16)
+    
+    if alpha > 1.0:
+        last_block_filters = _make_divisible(1280 * alpha, 8)
+    else:
+        last_block_filters = 1280
+    
+    x = Conv2D(last_block_filters,
+               kernel_size=1, 
+               use_bias=False,
+               name='Conv_1')(x)
+    x = BatchNormalization(epsilon=1e-3, momentum=0.999, name='Conv_1_bn')(x)
+    x = Activation(relu6, name='out_relu')(x)
+
+    x = GlobalAveragePooling2D()(x)
+    outputs = Dense(classes, activation='softmax', use_bias=True, name='Logits')(x)
+
+    model = Model(inputs, outputs, name=f'mobilenetv2_{alpha:0.2f}_{rows}')
+
+    return model
+    
+def _inverted_res_block(inputs, expansion, stride, alpha, filters, block_id):
+    in_channels = inputs._keras_shape[-1]
+    prefix = 'features.' + str(block_id) + '.conv.'
+    pointwise_conv_filters = int(filters * alpha)
+    pointwise_filters = _make_divisible(pointwise_conv_filters, 8)
+
+    x = Conv2D(expansion * in_channels, kernel_size=1, padding='same',
+               use_bias=False, activation=None,
+               name=f'mobl{block_id}_conv_expand')(inputs)
+    x = BatchNormalization(epsilon=1e-3, momentum=0.999,
+                           name=f'bn{block_id}_conv_bn_expand')(x)
+    x = Activation(relu6, name=f'conv_{block_id}_relu')(x)
+
+    x = DepthwiseConv2D(kernel_size=3, strides=stride, activation=None,
+                        use_bias=False, padding='same',
+                        name=f'mobl{block_id}_conv_depthwise')(x)
+    x = BatchNormalization(epsilon=1e-3, momentum=0.999,
+                           name=f'bn{block_id}_conv_depthwise')(x)
+    x = Activation(relu6, name=f'conv_dw_{block_id}_relu')(x)
+
+    x = Conv2D(pointwise_filters,
+               kernel_size=1, padding='same', use_bias=False, activation=None,
+               name=f'mobl{block_id}_conv_project')(x)
+    x = BatchNormalization(epsilon=1e-3, momentum=0.999,
+                           name=f'bn{block_id}_conv_bn_project')(x)
+
+    if in_channels == pointwise_filters and stride == 1:
+        return Add(name=f'res_connect_{block_id}')([inputs, x])
+
+    return x
+    
 def _first_inverted_res_block(inputs,
                               expansion, stride,
                               alpha, filters, block_id):
@@ -145,7 +238,7 @@ def _first_inverted_res_block(inputs,
                            name=f'bn{block_id}_conv_project')
 
     if in_channels == pointwise_filters and stride == 1:
-        return Add(naem=f'res_connect_{block_id}')([inputs, x])
+        return Add(name=f'res_connect_{block_id}')([inputs, x])
 
     return x
     
