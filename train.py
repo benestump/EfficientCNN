@@ -1,10 +1,12 @@
 import tensorflow as tf
 import numpy as np
 from models.MobileNetV2 import MobileNetV2 
+import math
 
 import tensorflow_datasets as tfds
 import urllib3
 urllib3.disable_warnings()
+
 
 def automatic_gpu_usage() :
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -18,26 +20,6 @@ def automatic_gpu_usage() :
         except RuntimeError as e:
             # Memory growth must be set before GPUs have been initialized
             print(e)
-
-automatic_gpu_usage()
-
-BATCH_SIZE = 32
-INPUT_SHAPE = (32, 32, 3)
-EPOCH = 200
-
-ds_train, ds_info = tfds.load(
-    'cifar10',
-    split='train[:80%]',
-    as_supervised=True,
-    with_info=True,
-)
-ds_test, ds_info = tfds.load(
-    'cifar10',
-    split='train[80%:]',
-    as_supervised=True,
-    with_info=True,
-)
-
 
 def normalize_and_resize_img(image, label):
 
@@ -56,6 +38,85 @@ def apply_normalize_on_dataset(ds, is_test=False, batch_size=16):
     ds = ds.prefetch(tf.data.experimental.AUTOTUNE)
 
     return ds
+
+class Trainer(object):
+    def __init__(self,
+                 model,
+                 epochs,
+                 global_batch_size,
+                 strategy,
+                 initial_learning_rate,
+                 start_epoch=1,
+                 tensorboard_dir='./logs'):
+        
+        self.start_epoch = start_epoch
+        self.model = model
+        self.epochs = epochs
+        self.strategy = strategy 
+        self.global_batch_size = global_batch_size
+        self.loss_object = tf.keras.losses.CategoricalCrossentropy()
+        self.optimizer = tf.keras.optimizers.SGD(learning_rate=initial_learning_rate)
+        self.model = model
+        self.current_learning_rate = initial_learning_rate
+        self.last_val_loss = math.inf
+        self.lowest_val_loss = math.inf
+        self.patience_count = 0
+        self.max_patience = 10
+        self.tensorboard_dir = tensorboard_dir
+        self.best_model = None
+        self.version = version 
+
+    def lr_decay(self):
+        if self.patience_count >= self.max_patience:
+            self.current_learning_rate /= 10.0
+            self.patience_count = 0
+        elif self.last_val_loss == self.lowest_val_loss:
+            self.patience_count = 0
+        self.patience_count += 1
+
+        self.optimizer.learning_rate = self.current_learning_rate
+
+    def lr_decay_step(self, epoch):
+        if epoch == 25 or epoch == 50 or epoch == 75:
+            self.current_learning_rate /= 10.0
+        self.optimizer.learning_rate = self.current_learning_rate
+
+    def run(self, train_dist_dataset, val_dist_dataset):
+
+
+    def save_model(self, epoch, loss):
+        model_name = f'./models/MobileNetV2-epoch-{epoch}-loss-{loss:.4f}.h5'
+        self.model.save_weights(model_name)
+        self.best_model = model_name
+        print(f'Model {model_name} saved.')
+
+def create_dataset(tfrecords, batch_size, is_train):
+
+    dataset = tfrecords.map(normalize_and_resize_img, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+    if is_train:
+        dataset = dataset.shuffle(batch_size)
+    
+    dataset = dataset.batch(batch_size)
+    
+
+
+def train(dataset='cifar10',epochs, start_epoch, leargning_rate, tensorboard_dir, checkpoint, batch_size, train_tfrecords, val_tfrecords):
+
+    strategy = tf.distribute.MirroredStrategy()
+    global_batch_size = strategy.num_replicas_in_sync * batch_size
+    
+    tfdatasets, info = tfds.load(name=dataset, with_info=True, as_supervised=True)
+
+    ds_train, ds_test = tfdatasets['train'], tfdatasets['test']
+
+    train_dataset = create_dataset(ds_train, global_batch_size, is_train='True')
+    val_dataset = create_dataset(ds_test, global_batch_size, is_train='False')
+
+automatic_gpu_usage()
+
+
+
 
 ds_train = apply_normalize_on_dataset(ds_train, batch_size=BATCH_SIZE)
 ds_test = apply_normalize_on_dataset(ds_test, batch_size=BATCH_SIZE)
