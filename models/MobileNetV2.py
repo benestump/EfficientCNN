@@ -68,33 +68,33 @@ import numpy as np
 
 import tensorflow as tf
 
-from tf.keras import Model
-from tf.keras import Input
-from tf.keras.layers import Activation
-from tf.keras.layers import Dropout
-from tf.keras.layers import Reshape
-from tf.keras.layers import BatchNormalization 
-from tf.keras.layers import GlobalAveragePooling2D
-from tf.keras.layers import GlobalMaxPooling2D
-from tf.keras.layers import Conv2D
-from tf.keras.layers import AveragePooling2D
-from tf.keras.layers import Flatten
-from tf.keras.layers import Add
-from tf.keras.layers import Dense
-from tf.keras.layers import DepthwiseConv2D
-from tf.keras import initializers
-from tf.keras import regularizers
-from tf.keras import constraints
+from tensorflow.keras import Model
+from tensorflow.keras import Input
+from tensorflow.keras.layers import Activation
+from tensorflow.keras.layers import Dropout
+from tensorflow.keras.layers import Reshape
+from tensorflow.keras.layers import BatchNormalization 
+from tensorflow.keras.layers import GlobalAveragePooling2D
+from tensorflow.keras.layers import GlobalMaxPooling2D
+from tensorflow.keras.layers import Conv2D
+from tensorflow.keras.layers import AveragePooling2D
+from tensorflow.keras.layers import Flatten
+from tensorflow.keras.layers import Add
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import DepthwiseConv2D
+from tensorflow.keras import initializers
+from tensorflow.keras import regularizers
+from tensorflow.keras import constraints
 
 def relu6(x):
-    return tf.keras.layers.ReLU(6.)
+    return tf.nn.relu6(x)
 
 # This function is taken from the original tf repo. It ensures that all layers have a channel number that is divisible by 8
 # It can be seen here  https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
 
 def _make_divisible(v, divisor, min_value=None):
-    if min_value in None:
-        min_value = divisior
+    if min_value is None:
+        min_value = divisor
     new_v = max(min_value, int(v + divisor / 2)  // divisor * divisor)
 
     if new_v < 0.9 * v:
@@ -157,7 +157,7 @@ def MobileNetV2(input_shape,
     x = _inverted_res_block(x, filters=160, alpha=alpha, stride=1,
                             expansion=6, block_id=14)
     x = _inverted_res_block(x, filters=160, alpha=alpha, stride=1,
-                            expansion=6, block_id==15)
+                            expansion=6, block_id=15)
     
     x = _inverted_res_block(x, filters=320, alpha=alpha, stride=1,
                             expansion=6, block_id=16)
@@ -177,12 +177,12 @@ def MobileNetV2(input_shape,
     x = GlobalAveragePooling2D()(x)
     outputs = Dense(classes, activation='softmax', use_bias=True, name='Logits')(x)
 
-    model = Model(inputs, outputs, name=f'mobilenetv2_{alpha:0.2f}_{rows}')
+    model = Model(inputs, outputs, name=f'mobilenetv2_{alpha:0.2f}')
 
     return model
     
 def _inverted_res_block(inputs, expansion, stride, alpha, filters, block_id):
-    in_channels = inputs._keras_shape[-1]
+    in_channels = inputs.shape[-1]
     prefix = 'features.' + str(block_id) + '.conv.'
     pointwise_conv_filters = int(filters * alpha)
     pointwise_filters = _make_divisible(pointwise_conv_filters, 8)
@@ -215,7 +215,7 @@ def _inverted_res_block(inputs, expansion, stride, alpha, filters, block_id):
 def _first_inverted_res_block(inputs,
                               expansion, stride,
                               alpha, filters, block_id):
-    in_channels = inputs._keras_shape[-1]
+    in_channels = inputs.shape[-1]
     prefix = 'features.' + str(block_id) + '.conv.'
     pointwise_conv_filters = int(filters * alpha)
     pointwise_filters = _make_divisible(pointwise_conv_filters, 8)
@@ -235,7 +235,7 @@ def _first_inverted_res_block(inputs,
                activation=None,
                name=f'mobl{block_id}_conv_project')(x)
     x = BatchNormalization(epsilon=1e-3, momentum=0.999,
-                           name=f'bn{block_id}_conv_project')
+                           name=f'bn{block_id}_conv_project')(x)
 
     if in_channels == pointwise_filters and stride == 1:
         return Add(name=f'res_connect_{block_id}')([inputs, x])
