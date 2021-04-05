@@ -1,3 +1,4 @@
+import argparse
 import tensorflow as tf
 import numpy as np
 from models.MobileNetV2 import MobileNetV2 
@@ -21,6 +22,12 @@ def automatic_gpu_usage() :
         except RuntimeError as e:
             # Memory growth must be set before GPUs have been initialized
             print(e)
+
+def automatic_tpu_usage():
+    resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='')
+    tf.config.experimental_connect_to_cluster(resolver)
+    tf.tpu.experimental.initialize_tpu_system(resolver)
+    print("All devices: ", tf.config.list_logical_devices('TPU'))
 
 def normalize_and_resize_img(image, label):
 
@@ -73,9 +80,9 @@ def train(dataset,input_shape, epochs, leargning_rate, batch_size):
     checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt_{epoch}")
 
     def decay(epoch):
-        if epoch < 10:
+        if epoch < 250:
             return leargning_rate
-        elif epoch >= 10 and epoch < 20:
+        elif epoch >= 250 and epoch < 280:
             return leargning_rate/10.
         else:
             return leargning_rate/10.
@@ -104,12 +111,22 @@ def train(dataset,input_shape, epochs, leargning_rate, batch_size):
     
 
 if __name__ == "__main__":
-    dataset = "cifar10"
-    epochs = 100
-    batch_size = 16
-    learning_rate = 0.01
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--device', help='Select device for training')
+    parser.add_argument('--dataset', help='cifar10, imagenet')
+    parser.add_argument('--epochs', type=int, default=200, help='Epoch')
+    parser.add_argument('--model', help='choose model')
+    parser.add_argument('--batch_size', type=int)
+    parser.add_argument('--learning_rate', '--lr', type=float, default=0.1, help='Learning Rate')
+    
+    args = parser.parse_args()
+
     INPUT_SAHPE=(32, 32, 3)
+    
+    if args.device == 'GPU':
+        automatic_gpu_usage()
+    elif args.device == 'TPU':
+        automatic_tpu_usage()
 
-    automatic_gpu_usage()
-
-    train(dataset=dataset,input_shape=INPUT_SAHPE, epochs=epochs, leargning_rate=learning_rate,batch_size=batch_size)
+    train(dataset=args.dataset,input_shape=INPUT_SAHPE, epochs=args.epochs, leargning_rate=args.learning_rate,batch_size=args.batch_size)
