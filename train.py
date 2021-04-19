@@ -40,15 +40,8 @@ def create_dataset(tfrecords, batch_size, is_train):
 
     dataset = tfrecords.map(normalize_and_resize_img, num_parallel_calls=tf.data.experimental.AUTOTUNE)
     
-    '''
-    Only shuffle and repeat the dataset in training. The advantage to have a
-    infinite dataset for training is to avoid the potential last partial batch
-    in each epoch, so users don't need to think about scaling the gradients
-    based on the actual batch size.
-    '''
     if is_train:
         dataset = dataset.shuffle(200)
-        dataset = dataset.repeat()
     
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
@@ -71,10 +64,10 @@ class Trainer(object):
         self.lowest_val_loss = math.inf
         self.patience_count = 0
         self.max_patience = 10
-        # self.test_loss = tf.keras.metrics.Mean(name='test_loss')
-        # self.train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='train_accuracy')
-        # self.test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='test_accuracy')
-        self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, model=self.model)
+        self.test_loss = tf.keras.metrics.Mean(name='test_loss')
+        self.train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='train_accuracy')
+        self.test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='test_accuracy')
+        # self.checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, model=self.model)
         self.tensorboard_dir = tensorboard_dir
         self.best_model = None
 
@@ -94,10 +87,10 @@ class Trainer(object):
         self.optimizer.learning_rate = self.current_learning_rate
 
     def compute_loss(self, labels, predictions):
-        per_example_loss == self.loss_object(labels, predictions)
+        per_example_loss =self.loss_object(labels, predictions)
         return tf.nn.compute_average_loss(per_example_loss, global_batch_size=self.global_batch_size)
 
-    def train_step(sefl, inputs):
+    def train_step(self, inputs):
         images, labels = inputs
 
         with tf.GradientTape() as tape:
@@ -107,7 +100,7 @@ class Trainer(object):
         grads = tape.gradient(target=loss, sources=self.model.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
-        # self.train_accuracy.update_state(labels, predictions)
+        self.train_accuracy.update_state(labels, predictions)
         
         return loss
 
@@ -115,56 +108,65 @@ class Trainer(object):
         images, labels = inputs
 
         predictions = self.model(images, training=False)
-        t_loss = self.compute_loss(labels, predictions)
+        loss = self.compute_loss(labels, predictions)
 
-        # self.test_loss.update_state(t_loss)
-        # self.test_accuracy.update_state(labels, predictions)
-        return t_loss
+        self.test_loss.update_state(loss)
+        self.test_accuracy.update_state(labels, predictions)
 
     def run(self, train_dist_dataset, val_dist_dataset):
-
-        @tf.function
-        def distribute_train_epoch(dataset):
-            tf.print('Start distributed training...')
-            total_loss = 0.0
-            num_train_batches = 0.0
-            for one_batch in dataset:
-                per_replica_loss = self.strategy.experimental_run_v2(
-                    self.train_step, args=(one_batch)
-                )
-                batch_loss = self.strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_loss, axis=None)
-                total_loss += batch_loss
-                num_train_batches += 1
-                tf.print('Trained batch', num_train_batches, 'batch loss', batch_loss, 'epoch total loss', total_loss/num_train_batches)
-            return total_loss, num_train_batches
         
         @tf.function
-        def distribute_test_epoch(dataset):
-            total_loss = 0.0
-            num_test_batches = 0.0
-            for one_batch in dataset:
-                per_replica_loss = self.strategy.experimental_run_v2(
-                    self.test_step, args=(one_batch, )
-                )
-                num_test_batches += 1
-                batch_loss = self.strategy.reduce(
-                    tf.distribute.ReduceOp.SUM, per_replica_loss, axis=None
-                )
-                tf.print('Validated batch', num_test_batches, 'batch loss', batch_loss)
-                if not tf.math.is_nan(batch_loss):
-                    total_loss += batch_loss
-                else:
-                    num_test_batches -= 1
-                
-            return total_loss, num_test_batches
+        def distribute_train_step(dataset):
+            per_replica_loss = self.strategy.run(self.train_step, args=(dataset,))
+            return self.strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_loss, axis=None)
+        
+        @tf.function
+        def distribute_test_step(dataset):
+            return self.strategy.run(self.test_step, args=(dataset, ))
         
         summary_writer = tf.summary.create_file_writer(self.tensorboard_dir)
         summary_writer.set_as_default()
 
-        
+        for epoch in range(self.start_epoch, self.epochs + 1):
+            tf.summary.experimental.set_step(epoch)
+            total_loss = 0.0
+            num_batches = 0
+            
+            self.lr_decay()
+            tf.summary.scalar('epoch learnig rage', self.current_learning_rate)
 
+            print(f'Start epoch {epoch} with learning rate {self.current_learning_rate}')
+            for x in train_dist_dataset:  
+                total_loss += distribute_train_step(x)
+                num_batches += 1
+                
+            train_loss = total_loss / num_batches
+            tf.summary.scalar('epoch train loss', train_loss)
+
+            for x in val_dist_dataset:
+                distribute_test_step(x)
+            tf.summary.scalar('epoch val loss', self.test_loss.result())
+
+            print(f'epoch {epoch}, train_loss: {train_loss}, train_accuracy: {self.train_accuracy.result()*100}, test_loss: {self.test_loss.result()}, test_accuracy: {self.test_accuracy.result()*100}')
+
+            self.test_loss.reset_states()
+            self.train_accuracy.reset_states()
+            self.test_accuracy.reset_states()
+
+            if self.test_loss.result() < self.lowest_val_loss:
+                self.save_model(epoch, self.test_loss.result())
+                self.lowest_val_loss = self.test_loss.result()
+            self.last_val_loss = self.test_loss.result()
+
+        return self.best_model
     
-def train(dataset, device, epochs, leargning_rate, batch_size, resolver=None):
+    def save_model(self, epoch, loss):
+        model_name = f'./models_save/model-epoch-{epoch}-loss-{loss:.4f}.h5'
+        self.model.save_weights(model_name)
+        self.best_model = model_name
+        print(f'Model {model_name} saved')
+    
+def train(model, dataset, device, epochs, leargning_rate, batch_size, resolver=None):
     if device == 'GPU':
         strategy = tf.distribute.MirroredStrategy()
     elif device == 'TPU':
@@ -190,79 +192,23 @@ def train(dataset, device, epochs, leargning_rate, batch_size, resolver=None):
     '''
     with strategy.scope():
 
-        model = MobileNetV2(input_shape=input_shape, classes=10)
-        training_loss = tf.keras.metrics.Mean('training_loss', dtype=tf.float32)
-        training_accuracy = tf.keras.metrics.SparseCategoricalAccuracy('training_accuracy', dtype=tf.float32)
+        if model == 'MobileNetV2':
+            model = MobileNetV2(input_shape=input_shape, classes=10)
 
-        train_dataset = strategy.experimental_distribute_datasets_from_function(lambda _: create_dataset(ds_train, BATCH_SIZE_PER_REPLICA, is_train='True'))
-        val_dataset = strategy.experimental_distribute_datasets_from_function(lambda _:create_dataset(ds_test, BATCH_SIZE_PER_REPLICA, is_train='False'))
+        train_dist_dataset = strategy.experimental_distribute_datasets_from_function(lambda _: create_dataset(ds_train, BATCH_SIZE_PER_REPLICA, is_train='True'))
+        val_dist_dataset = strategy.experimental_distribute_datasets_from_function(lambda _:create_dataset(ds_test, BATCH_SIZE_PER_REPLICA, is_train='False'))
 
-    @tf.function
-    def train_step(iterator):
-        '''The step function for one training step'''
-        
-        def step_fn(inputs):
-            '''The computation to run on each device.'''
-            images, labels = inputs
-            with tf.GradientTape() as tape:
-                logits = model(images, training=True)
-                loss = tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
-                loss = tf.nn.compute_average_loss(loss, global_batch_size=batch_size)
-            grads = tape.gradient(loss, model.trainable_variables)
-            optimizer.apply_gradients(list(zip(grads, model.trainable_variables)))
-            training_loss.update_state(loss * strategy.num_replicas_in_sync)
-            training_accuracy.update_state(labels, logits)
-        
-        strategy.run(step_fn, args=(next(iterator),))
+        trainer = Trainer(
+            model,
+            epochs,
+            GLOBAL_BATCH_SIZE,
+            strategy,
+            initial_learning_rate=leargning_rate,         
+        )
+
+    print('Start training...')
+    return trainer.run(train_dist_dataset, val_dist_dataset)
     
-    steps_per_epoch = 10000 // batch_size
-
-    train_iterator = iter(train_dataset)
-    for epoch in range(epochs):
-        print(f'Epoch : {epoch}/{epochs}')
-
-        for step in range(steps_per_epoch):
-            train_step(train_iterator)
-
-        print(f'Current step: {optimizer.iterations.numpy()}, training loss: {round(float(training_loss.result()), 4)}, accuracy: {round(float(training_accuracy.result()) * 100, 2)}%')
-        training_loss.reset_states()
-        training_accuracy.reset_states()
-
-    checkpoint_dir = './training_checkpoints'
-    if not os.path.exists(os.path.join(checkpoint_dir)):
-        os.makedirs(os.path.join(checkpoint_dir))
-
-    checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt_{epoch}")
-
-    def decay(epoch):
-        if epoch < 150:
-            return leargning_rate
-        elif epoch >= 150 and epoch < 180:
-            return leargning_rate/10.
-        else:
-            return leargning_rate/10.
-    class PrintLR(tf.keras.callbacks.Callback):
-        def on_epoch_end(self, epoch, logs=None):
-            print('\n에포크 {}의 학습률은 {}입니다.'.format(epoch + 1,
-                                                      model.optimizer.lr.numpy()))  
-        
-    callbacks = [
-        tf.keras.callbacks.TensorBoard(log_dir='./logs'),
-        tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_prefix,
-                                         save_weights_only=True),
-        tf.keras.callbacks.LearningRateScheduler(decay),
-        PrintLR()
-    ]
-
-
-    # history_MBNetV2 = model.fit(
-    # train_dataset, 
-    # epochs=epochs,
-    # validation_data=val_dataset,
-    # verbose=1,
-    # use_multiprocessing=True,
-    # callbacks=callbacks
-    # )
     
 
 if __name__ == "__main__":
@@ -271,7 +217,7 @@ if __name__ == "__main__":
     parser.add_argument('--device', help='Select device for training')
     parser.add_argument('--dataset', help='cifar10, imagenet')
     parser.add_argument('--epochs', type=int, default=200, help='Epoch')
-    parser.add_argument('--model', help='choose model')
+    parser.add_argument('--model', help='MobileNetV2')
     parser.add_argument('--batch_size', type=int, help='batch size of multi device')
     parser.add_argument('--learning_rate', '--lr', type=float, default=0.1, help='Learning Rate')
     
@@ -283,7 +229,7 @@ if __name__ == "__main__":
         resolver = automatic_tpu_usage()
     
     if args.device == 'GPU':
-        train(dataset=args.dataset, device=args.device, epochs=args.epochs, leargning_rate=args.learning_rate, batch_size=args.batch_size)
+        train(model=args.model, dataset=args.dataset, device=args.device, epochs=args.epochs, leargning_rate=args.learning_rate, batch_size=args.batch_size)
     elif args.device == 'TPU':
-        train(dataset=args.dataset, device=args.device, epochs=args.epochs, leargning_rate=args.learning_rate, batch_size=args.batch_size, resolver=resolver)
+        train(model=args.model, dataset=args.dataset, device=args.device, epochs=args.epochs, leargning_rate=args.learning_rate, batch_size=args.batch_size, resolver=resolver)
     
